@@ -1,0 +1,66 @@
+version: 2
+jobs:
+  build:
+    working_directory: ~/app
+    docker:
+      - image: circleci/openjdk:8-jdk-browsers
+      - image: circleci/node:8.6.0
+      - image: circleci/python:2.7-jessie
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: mvn dependency:go-offline
+          command: |
+            docker version
+            mvn dependency:go-offline
+      - run:
+          name: mvn clean compile package -Pdev -Dmaven.test.skip=true
+          command: |
+            docker version
+            mvn clean compile package -Pdev -Dmaven.test.skip=true
+
+  deploy:
+    working_directory: ~/app
+    docker:
+      - image: circleci/openjdk:8-jdk-browsers
+      - image: circleci/node:8.6.0
+      - image: circleci/python:2.7-jessie
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Post commands
+          command: |
+            docker version
+            mvn clean compile package -Pdev -Dmaven.test.skip=true
+            docker build -t $AWS_ACCOUNT_ID.dkr.ecr.eu-central-1.amazonaws.com/import-service:$CIRCLE_SHA1 .
+      - run:
+          name: Deployment
+          command: |
+            sudo apt-get -y -qq update
+            sudo apt-get -y -qq install python3.4
+            curl -O https://bootstrap.pypa.io/get-pip.py
+            python3 get-pip.py --user
+            export PATH=~/.local/bin:$PATH
+            pip --version
+            pip install awscli --upgrade --user
+            aws --version
+            chmod 777 ./deploy.sh
+            ./deploy.sh
+
+
+workflows:
+  version: 2
+  build-and-deploy:
+    jobs:
+      - build
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only:
+                - master
+                - development
+                - downloader-fix

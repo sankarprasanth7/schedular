@@ -1,0 +1,121 @@
+image: docker:latest
+
+
+# Pick zero or more services to be used on all builds.
+# Only needed when using a docker container to run your tests in.
+# Check out: http://docs.gitlab.com/ce/ci/docker/using_docker_images.html#what-is-a-service
+
+# This folder is cached between builds
+# http://docs.gitlab.com/ce/ci/yaml/README.html#cache
+stages:
+  - build
+  - test
+  - release
+  - deploy
+
+BUILD-PHASE:
+  image: maven:3-jdk-8
+  stage: build
+  services:
+   - name: docker:latest
+  script:
+   - mvn clean compile package -Pdev -Dmaven.test.skip=true
+  artifacts:
+    paths:
+      - target/*.jar
+  tags:
+   - mojo-runner 
+
+TEST-PHASE:
+  stage: test
+  script:
+   - echo "test phase"
+  tags:
+   - mojo-runner 
+
+# Release build for Development
+# This step builds a docker image and pushs to registry by appending branch name and commit sha
+DEVELOPMENT-RELEASE-PHASE:
+ image: docker:stable
+ variables:
+  DOCKER_HOST: tcp://docker:2375/
+  DOCKER_DRIVER: overlay2
+  IMAGE_NAME: "registry.gitlab.com/mojoreads/import-service:$CI_COMMIT_REF_NAME-$CI_COMMIT_SHA"
+ services:
+  - docker:dind
+ stage: release
+ only:
+  - development@mojoreads/import-service
+ script:
+  - docker build -t $IMAGE_NAME .
+  - docker login -u $INFRA_USER -p $INFRA_PASSWORD registry.gitlab.com
+  - docker push $IMAGE_NAME
+ tags:
+   - mojo-runner
+
+# Release build for staging
+# This step builds a docker image and pushs to registry by appending branch name and commit tag
+STAGING-RELEASE-PHASE:
+ image: docker:stable
+ variables:
+  DOCKER_HOST: tcp://docker:2375/
+  DOCKER_DRIVER: overlay2
+  IMAGE_NAME: "registry.gitlab.com/mojoreads/import-service:$CI_COMMIT_REF_NAME"
+ services:
+  - docker:dind
+ stage: release
+ only:
+  - staging@mojoreads/import-service
+ script:
+  - docker build -t $IMAGE_NAME .
+  - docker login -u $INFRA_USER -p $INFRA_PASSWORD registry.gitlab.com
+  - docker push $IMAGE_NAME
+ tags:
+   - mojo-runner
+  
+MASTER-RELEASE-PHASE:
+ image: docker:stable
+ stage: release
+ variables:
+  DOCKER_HOST: tcp://docker:2375/
+  DOCKER_DRIVER: overlay2
+  IMAGE_NAME: "registry.gitlab.com/mojoreads/import-service:$CI_COMMIT_TAG"
+ services:
+  - docker:dind
+ only:
+  - tags
+ except:
+  - /^(?!master).+@/
+ script:
+  - docker build -t $IMAGE_NAME .
+  - docker login -u $INFRA_USER -p $INFRA_PASSWORD registry.gitlab.com
+  - docker push $IMAGE_NAME
+ tags:
+   - mojo-runner
+
+MASTER-DEPLOY-PHASE:
+  stage: deploy
+  image: alpine:3.8
+  variables:
+    KUBE_CONFIG_LOC: /tmp/.kube_config
+    IMAGE_NAME: "registry.gitlab.com/mojoreads/import-service:$CI_COMMIT_TAG"
+
+  before_script:
+    - wget https://storage.googleapis.com/kubernetes-release/release/v1.11.2/bin/linux/amd64/kubectl
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/kubectl
+    - echo ${KUBECONFIG_CONTENT_PRODUCTION} | base64 -d > ${KUBE_CONFIG_LOC}
+  script:
+    - kubectl --kubeconfig=${KUBE_CONFIG_LOC} set image deployment/import-service-group-0 import-service-group-0=${IMAGE_NAME}
+    - kubectl --kubeconfig=${KUBE_CONFIG_LOC} set image deployment/import-service-group-1 import-service-group-1=${IMAGE_NAME}
+    - kubectl --kubeconfig=${KUBE_CONFIG_LOC} set image deployment/import-service-libri import-service-libri=${IMAGE_NAME}
+  after_script:
+    - rm ${KUBE_CONFIG_LOC}
+  only:
+    - tags
+  except:
+    - /^(?!master).+@/
+  when: manual
+  allow_failure: false
+  tags:
+    - mojo-runner 
